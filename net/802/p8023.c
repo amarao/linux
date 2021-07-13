@@ -1,10 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *	NET3:	802.3 data link hooks used for IPX 802.3
- *
- *	This program is free software; you can redistribute it and/or
- *	modify it under the terms of the GNU General Public License
- *	as published by the Free Software Foundation; either version
- *	2 of the License, or (at your option) any later version.
  *
  *	802.3 isn't really a protocol data link layer. Some old IPX stuff
  *	uses it however. Note that there is only one 802.3 protocol layer
@@ -18,8 +14,10 @@
 #include <linux/module.h>
 #include <linux/netdevice.h>
 #include <linux/skbuff.h>
+#include <linux/slab.h>
 
 #include <net/datalink.h>
+#include <net/p8022.h>
 
 /*
  *	Place an 802.3 header on a packet. The driver will do the mac
@@ -30,7 +28,7 @@ static int p8023_request(struct datalink_proto *dl,
 {
 	struct net_device *dev = skb->dev;
 
-	dev->hard_header(skb, dev, ETH_P_802_3, dest_node, NULL, skb->len);
+	dev_hard_header(skb, dev, ETH_P_802_3, dest_node, NULL, skb->len);
 	return dev_queue_xmit(skb);
 }
 
@@ -53,9 +51,10 @@ struct datalink_proto *make_8023_client(void)
  */
 void destroy_8023_client(struct datalink_proto *dl)
 {
-	if (dl)
-		kfree(dl);
+	kfree(dl);
 }
 
 EXPORT_SYMBOL(destroy_8023_client);
 EXPORT_SYMBOL(make_8023_client);
+
+MODULE_LICENSE("GPL");

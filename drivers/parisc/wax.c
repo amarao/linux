@@ -1,12 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *	WAX Device Driver
  *
  *	(c) Copyright 2000 The Puffin Group Inc.
- *
- *	This program is free software; you can redistribute it and/or modify
- *	it under the terms of the GNU General Public License as published by
- *      the Free Software Foundation; either version 2 of the License, or
- *      (at your option) any later version.
  *
  *	by Helge Deller <deller@gmx.de>
  */
@@ -68,20 +64,19 @@ wax_init_irq(struct gsc_asic *wax)
 //	gsc_writel(0xFFFFFFFF, base+0x2000); /* RS232-B on Wax */
 }
 
-int __init
-wax_init_chip(struct parisc_device *dev)
+static int __init wax_init_chip(struct parisc_device *dev)
 {
 	struct gsc_asic *wax;
 	struct parisc_device *parent;
 	struct gsc_irq gsc_irq;
 	int ret;
 
-	wax = kmalloc(sizeof(*wax), GFP_KERNEL);
+	wax = kzalloc(sizeof(*wax), GFP_KERNEL);
 	if (!wax)
 		return -ENOMEM;
 
 	wax->name = "wax";
-	wax->hpa = dev->hpa;
+	wax->hpa = dev->hpa.start;
 
 	wax->version = 0;   /* gsc_readb(wax->hpa+WAX_VER); */
 	printk(KERN_INFO "%s at 0x%lx found.\n", wax->name, wax->hpa);
@@ -93,7 +88,7 @@ wax_init_chip(struct parisc_device *dev)
 	dev->irq = gsc_claim_irq(&gsc_irq, WAX_GSC_IRQ);
 	if (dev->irq < 0) {
 		printk(KERN_ERR "%s(): cannot get GSC irq\n",
-				__FUNCTION__);
+				__func__);
 		kfree(wax);
 		return -EBUSY;
 	}
@@ -126,14 +121,14 @@ wax_init_chip(struct parisc_device *dev)
 	return ret;
 }
 
-static struct parisc_device_id wax_tbl[] = {
+static const struct parisc_device_id wax_tbl[] __initconst = {
   	{ HPHW_BA, HVERSION_REV_ANY_ID, HVERSION_ANY_ID, 0x0008e },
 	{ 0, }
 };
 
 MODULE_DEVICE_TABLE(parisc, wax_tbl);
 
-struct parisc_driver wax_driver = {
+struct parisc_driver wax_driver __refdata = {
 	.name =		"wax",
 	.id_table =	wax_tbl,
 	.probe =	wax_init_chip,

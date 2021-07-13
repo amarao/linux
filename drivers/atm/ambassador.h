@@ -1,29 +1,13 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
   Madge Ambassador ATM Adapter driver.
   Copyright (C) 1995-1999  Madge Networks Ltd.
 
-  This program is free software; you can redistribute it and/or modify
-  it under the terms of the GNU General Public License as published by
-  the Free Software Foundation; either version 2 of the License, or
-  (at your option) any later version.
-
-  This program is distributed in the hope that it will be useful,
-  but WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-  GNU General Public License for more details.
-
-  You should have received a copy of the GNU General Public License
-  along with this program; if not, write to the Free Software
-  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
-
-  The GNU GPL is contained in /usr/doc/copyright/GPL on a Debian
-  system and in the file COPYING in the Linux kernel source.
 */
 
 #ifndef AMBASSADOR_H
 #define AMBASSADOR_H
 
-#include <linux/config.h>
 
 #ifdef CONFIG_ATM_AMBASSADOR_DEBUG
 #define DEBUG_AMBASSADOR
@@ -627,19 +611,15 @@ typedef struct {
 
 struct amb_dev {
   u8               irq;
-  long		   flags;
+  unsigned long	   flags;
   u32              iobase;
   u32 *            membase;
 
-#ifdef FILL_RX_POOLS_IN_BH
-  struct work_struct bh;
-#endif
-  
   amb_cq           cq;
   amb_txq          txq;
   amb_rxq          rxq[NUM_RX_POOLS];
   
-  struct semaphore vcc_sf;
+  struct mutex     vcc_sf;
   amb_tx_info      txer[NUM_VCS];
   struct atm_vcc * rxer[NUM_VCS];
   unsigned int     tx_avail;
@@ -656,17 +636,6 @@ typedef struct amb_dev amb_dev;
 
 #define AMB_DEV(atm_dev) ((amb_dev *) (atm_dev)->dev_data)
 #define AMB_VCC(atm_vcc) ((amb_vcc *) (atm_vcc)->dev_data)
-
-/* the microcode */
-
-typedef struct {
-  u32 start;
-  unsigned int count;
-} region;
-
-static region ucode_regions[];
-static u32 ucode_data[];
-static u32 ucode_start;
 
 /* rate rounding */
 

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 #ifndef _LMC_IOCTL_H_
 #define _LMC_IOCTL_H_
 /*	$Id: lmc_ioctl.h,v 1.15 2000/04/06 12:16:43 asj Exp $	*/
@@ -11,9 +12,6 @@
   * Rob Braun (bbraun@vix.com),
   * Michael Graff (explorer@vix.com) and
   * Matt Thomas (matt@3am-software.com).
-  *
-  * This software may be used and distributed according to the terms
-  * of the GNU General Public License version 2, incorporated herein by reference.
   */
 
 #define LMCIOCGINFO             SIOCDEVPRIVATE+3 /* get current state */
@@ -61,7 +59,7 @@
 /*
  * IFTYPE defines
  */
-#define LMC_PPP         1               /* use sppp interface */
+#define LMC_PPP         1               /* use generic HDLC interface */
 #define LMC_NET         2               /* use direct net interface */
 #define LMC_RAW         3               /* use direct net interface */
 

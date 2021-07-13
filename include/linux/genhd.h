@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _LINUX_GENHD_H
 #define _LINUX_GENHD_H
 
@@ -9,416 +10,336 @@
  *		<drew@colorado.edu>
  */
 
-#include <linux/config.h>
 #include <linux/types.h>
+#include <linux/kdev_t.h>
+#include <linux/rcupdate.h>
+#include <linux/slab.h>
+#include <linux/percpu-refcount.h>
+#include <linux/uuid.h>
+#include <linux/blk_types.h>
+#include <asm/local.h>
+
+extern const struct device_type disk_type;
+extern struct device_type part_type;
+extern struct class block_class;
+
+#define DISK_MAX_PARTS			256
+#define DISK_NAME_LEN			32
+
 #include <linux/major.h>
 #include <linux/device.h>
 #include <linux/smp.h>
 #include <linux/string.h>
 #include <linux/fs.h>
+#include <linux/workqueue.h>
+#include <linux/xarray.h>
+
+#define PARTITION_META_INFO_VOLNAMELTH	64
+/*
+ * Enough for the string representation of any kind of UUID plus NULL.
+ * EFI UUID is 36 characters. MSDOS UUID is 11 characters.
+ */
+#define PARTITION_META_INFO_UUIDLTH	(UUID_STRING_LEN + 1)
+
+struct partition_meta_info {
+	char uuid[PARTITION_META_INFO_UUIDLTH];
+	u8 volname[PARTITION_META_INFO_VOLNAMELTH];
+};
+
+/**
+ * DOC: genhd capability flags
+ *
+ * ``GENHD_FL_REMOVABLE`` (0x0001): indicates that the block device
+ * gives access to removable media.
+ * When set, the device remains present even when media is not
+ * inserted.
+ * Must not be set for devices which are removed entirely when the
+ * media is removed.
+ *
+ * ``GENHD_FL_CD`` (0x0008): the block device is a CD-ROM-style
+ * device.
+ * Affects responses to the ``CDROM_GET_CAPABILITY`` ioctl.
+ *
+ * ``GENHD_FL_UP`` (0x0010): indicates that the block device is "up",
+ * with a similar meaning to network interfaces.
+ *
+ * ``GENHD_FL_SUPPRESS_PARTITION_INFO`` (0x0020): don't include
+ * partition information in ``/proc/partitions`` or in the output of
+ * printk_all_partitions().
+ * Used for the null block device and some MMC devices.
+ *
+ * ``GENHD_FL_EXT_DEVT`` (0x0040): the driver supports extended
+ * dynamic ``dev_t``, i.e. it wants extended device numbers
+ * (``BLOCK_EXT_MAJOR``).
+ * This affects the maximum number of partitions.
+ *
+ * ``GENHD_FL_NATIVE_CAPACITY`` (0x0080): based on information in the
+ * partition table, the device's capacity has been extended to its
+ * native capacity; i.e. the device has hidden capacity used by one
+ * of the partitions (this is a flag used so that native capacity is
+ * only ever unlocked once).
+ *
+ * ``GENHD_FL_BLOCK_EVENTS_ON_EXCL_WRITE`` (0x0100): event polling is
+ * blocked whenever a writer holds an exclusive lock.
+ *
+ * ``GENHD_FL_NO_PART_SCAN`` (0x0200): partition scanning is disabled.
+ * Used for loop devices in their default settings and some MMC
+ * devices.
+ *
+ * ``GENHD_FL_HIDDEN`` (0x0400): the block device is hidden; it
+ * doesn't produce events, doesn't appear in sysfs, and doesn't have
+ * an associated ``bdev``.
+ * Implies ``GENHD_FL_SUPPRESS_PARTITION_INFO`` and
+ * ``GENHD_FL_NO_PART_SCAN``.
+ * Used for multipath devices.
+ */
+#define GENHD_FL_REMOVABLE			0x0001
+/* 2 is unused (used to be GENHD_FL_DRIVERFS) */
+/* 4 is unused (used to be GENHD_FL_MEDIA_CHANGE_NOTIFY) */
+#define GENHD_FL_CD				0x0008
+#define GENHD_FL_UP				0x0010
+#define GENHD_FL_SUPPRESS_PARTITION_INFO	0x0020
+#define GENHD_FL_EXT_DEVT			0x0040
+#define GENHD_FL_NATIVE_CAPACITY		0x0080
+#define GENHD_FL_BLOCK_EVENTS_ON_EXCL_WRITE	0x0100
+#define GENHD_FL_NO_PART_SCAN			0x0200
+#define GENHD_FL_HIDDEN				0x0400
 
 enum {
-/* These three have identical behaviour; use the second one if DOS FDISK gets
-   confused about extended/logical partitions starting past cylinder 1023. */
-	DOS_EXTENDED_PARTITION = 5,
-	LINUX_EXTENDED_PARTITION = 0x85,
-	WIN98_EXTENDED_PARTITION = 0x0f,
-
-	LINUX_SWAP_PARTITION = 0x82,
-	LINUX_RAID_PARTITION = 0xfd,	/* autodetect RAID partition */
-
-	SOLARIS_X86_PARTITION =	LINUX_SWAP_PARTITION,
-	NEW_SOLARIS_X86_PARTITION = 0xbf,
-
-	DM6_AUX1PARTITION = 0x51,	/* no DDO:  use xlated geom */
-	DM6_AUX3PARTITION = 0x53,	/* no DDO:  use xlated geom */
-	DM6_PARTITION =	0x54,		/* has DDO: use xlated geom & offset */
-	EZD_PARTITION =	0x55,		/* EZ-DRIVE */
-
-	FREEBSD_PARTITION = 0xa5,	/* FreeBSD Partition ID */
-	OPENBSD_PARTITION = 0xa6,	/* OpenBSD Partition ID */
-	NETBSD_PARTITION = 0xa9,	/* NetBSD Partition ID */
-	BSDI_PARTITION = 0xb7,		/* BSDI Partition ID */
-	MINIX_PARTITION = 0x81,		/* Minix Partition ID */
-	UNIXWARE_PARTITION = 0x63,	/* Same as GNU_HURD and SCO Unix */
+	DISK_EVENT_MEDIA_CHANGE			= 1 << 0, /* media changed */
+	DISK_EVENT_EJECT_REQUEST		= 1 << 1, /* eject requested */
 };
 
-#ifndef __KERNEL__
-
-struct partition {
-	unsigned char boot_ind;		/* 0x80 - active */
-	unsigned char head;		/* starting head */
-	unsigned char sector;		/* starting sector */
-	unsigned char cyl;		/* starting cylinder */
-	unsigned char sys_ind;		/* What partition type */
-	unsigned char end_head;		/* end head */
-	unsigned char end_sector;	/* end sector */
-	unsigned char end_cyl;		/* end cylinder */
-	unsigned int start_sect;	/* starting sector counting from 0 */
-	unsigned int nr_sects;		/* nr of sectors in partition */
-} __attribute__((packed));
-
-#endif
-
-#ifdef __KERNEL__
-struct partition {
-	unsigned char boot_ind;		/* 0x80 - active */
-	unsigned char head;		/* starting head */
-	unsigned char sector;		/* starting sector */
-	unsigned char cyl;		/* starting cylinder */
-	unsigned char sys_ind;		/* What partition type */
-	unsigned char end_head;		/* end head */
-	unsigned char end_sector;	/* end sector */
-	unsigned char end_cyl;		/* end cylinder */
-	__le32 start_sect;	/* starting sector counting from 0 */
-	__le32 nr_sects;		/* nr of sectors in partition */
-} __attribute__((packed));
-
-struct hd_struct {
-	sector_t start_sect;
-	sector_t nr_sects;
-	struct kobject kobj;
-	unsigned reads, read_sectors, writes, write_sectors;
-	int policy, partno;
+enum {
+	/* Poll even if events_poll_msecs is unset */
+	DISK_EVENT_FLAG_POLL			= 1 << 0,
+	/* Forward events to udev */
+	DISK_EVENT_FLAG_UEVENT			= 1 << 1,
 };
 
-#define GENHD_FL_REMOVABLE			1
-#define GENHD_FL_DRIVERFS			2
-#define GENHD_FL_CD				8
-#define GENHD_FL_UP				16
-#define GENHD_FL_SUPPRESS_PARTITION_INFO	32
+struct disk_events;
+struct badblocks;
 
-struct disk_stats {
-	unsigned read_sectors, write_sectors;
-	unsigned reads, writes;
-	unsigned read_merges, write_merges;
-	unsigned read_ticks, write_ticks;
-	unsigned io_ticks;
-	unsigned time_in_queue;
+struct blk_integrity {
+	const struct blk_integrity_profile	*profile;
+	unsigned char				flags;
+	unsigned char				tuple_size;
+	unsigned char				interval_exp;
+	unsigned char				tag_size;
 };
-	
+
 struct gendisk {
+	/* major, first_minor and minors are input parameters only,
+	 * don't use directly.  Use disk_devt() and disk_max_parts().
+	 */
 	int major;			/* major number of driver */
 	int first_minor;
 	int minors;                     /* maximum number of minors, =1 for
                                          * disks that can't be partitioned. */
-	char disk_name[32];		/* name of major driver */
-	struct hd_struct **part;	/* [indexed by minor] */
-	struct block_device_operations *fops;
+
+	char disk_name[DISK_NAME_LEN];	/* name of major driver */
+
+	unsigned short events;		/* supported events */
+	unsigned short event_flags;	/* flags related to event processing */
+
+	struct xarray part_tbl;
+	struct block_device *part0;
+
+	const struct block_device_operations *fops;
 	struct request_queue *queue;
 	void *private_data;
-	sector_t capacity;
 
 	int flags;
-	char devfs_name[64];		/* devfs crap */
-	int number;			/* more of the same */
-	struct device *driverfs_dev;
-	struct kobject kobj;
+	unsigned long state;
+#define GD_NEED_PART_SCAN		0
+#define GD_READ_ONLY			1
+#define GD_QUEUE_REF			2
+
+	struct mutex open_mutex;	/* open/close mutex */
+	unsigned open_partitions;	/* number of open partitions */
+
+	struct kobject *slave_dir;
 
 	struct timer_rand_state *random;
-	int policy;
-
 	atomic_t sync_io;		/* RAID */
-	unsigned long stamp, stamp_idle;
-	int in_flight;
-#ifdef	CONFIG_SMP
-	struct disk_stats *dkstats;
-#else
-	struct disk_stats dkstats;
+	struct disk_events *ev;
+#ifdef  CONFIG_BLK_DEV_INTEGRITY
+	struct kobject integrity_kobj;
+#endif	/* CONFIG_BLK_DEV_INTEGRITY */
+#if IS_ENABLED(CONFIG_CDROM)
+	struct cdrom_device_info *cdi;
 #endif
+	int node_id;
+	struct badblocks *bb;
+	struct lockdep_map lockdep_map;
 };
 
-/* Structure for sysfs attributes on block devices */
-struct disk_attribute {
-	struct attribute attr;
-	ssize_t (*show)(struct gendisk *, char *);
-};
-
-/* 
- * Macros to operate on percpu disk statistics:
- *
- * The __ variants should only be called in critical sections. The full
- * variants disable/enable preemption.
+/*
+ * The gendisk is refcounted by the part0 block_device, and the bd_device
+ * therein is also used for device model presentation in sysfs.
  */
-#ifdef	CONFIG_SMP
-#define __disk_stat_add(gendiskp, field, addnd) 	\
-	(per_cpu_ptr(gendiskp->dkstats, smp_processor_id())->field += addnd)
+#define dev_to_disk(device) \
+	(dev_to_bdev(device)->bd_disk)
+#define disk_to_dev(disk) \
+	(&((disk)->part0->bd_device))
 
-#define disk_stat_read(gendiskp, field)					\
-({									\
-	typeof(gendiskp->dkstats->field) res = 0;			\
-	int i;								\
-	for (i=0; i < NR_CPUS; i++) {					\
-		if (!cpu_possible(i))					\
-			continue;					\
-		res += per_cpu_ptr(gendiskp->dkstats, i)->field;	\
-	}								\
-	res;								\
-})
-
-static inline void disk_stat_set_all(struct gendisk *gendiskp, int value)	{
-	int i;
-	for (i=0; i < NR_CPUS; i++) {
-		if (cpu_possible(i)) {
-			memset(per_cpu_ptr(gendiskp->dkstats, i), value,	
-					sizeof (struct disk_stats));
-		}
-	}
-}		
-				
+#if IS_REACHABLE(CONFIG_CDROM)
+#define disk_to_cdi(disk)	((disk)->cdi)
 #else
-#define __disk_stat_add(gendiskp, field, addnd) \
-				(gendiskp->dkstats.field += addnd)
-#define disk_stat_read(gendiskp, field)	(gendiskp->dkstats.field)
-
-static inline void disk_stat_set_all(struct gendisk *gendiskp, int value)	{
-	memset(&gendiskp->dkstats, value, sizeof (struct disk_stats));
-}
+#define disk_to_cdi(disk)	NULL
 #endif
 
-#define disk_stat_add(gendiskp, field, addnd)			\
-	do {							\
-		preempt_disable();				\
-		__disk_stat_add(gendiskp, field, addnd);	\
-		preempt_enable();				\
-	} while (0)
-
-#define __disk_stat_dec(gendiskp, field) __disk_stat_add(gendiskp, field, -1)
-#define disk_stat_dec(gendiskp, field) disk_stat_add(gendiskp, field, -1)
-
-#define __disk_stat_inc(gendiskp, field) __disk_stat_add(gendiskp, field, 1)
-#define disk_stat_inc(gendiskp, field) disk_stat_add(gendiskp, field, 1)
-
-#define __disk_stat_sub(gendiskp, field, subnd) \
-		__disk_stat_add(gendiskp, field, -subnd)
-#define disk_stat_sub(gendiskp, field, subnd) \
-		disk_stat_add(gendiskp, field, -subnd)
-
-
-/* Inlines to alloc and free disk stats in struct gendisk */
-#ifdef  CONFIG_SMP
-static inline int init_disk_stats(struct gendisk *disk)
+static inline int disk_max_parts(struct gendisk *disk)
 {
-	disk->dkstats = alloc_percpu(struct disk_stats);
-	if (!disk->dkstats)
-		return 0;
-	return 1;
+	if (disk->flags & GENHD_FL_EXT_DEVT)
+		return DISK_MAX_PARTS;
+	return disk->minors;
 }
 
-static inline void free_disk_stats(struct gendisk *disk)
+static inline bool disk_part_scan_enabled(struct gendisk *disk)
 {
-	free_percpu(disk->dkstats);
-}
-#else	/* CONFIG_SMP */
-static inline int init_disk_stats(struct gendisk *disk)
-{
-	return 1;
+	return disk_max_parts(disk) > 1 &&
+		!(disk->flags & GENHD_FL_NO_PART_SCAN);
 }
 
-static inline void free_disk_stats(struct gendisk *disk)
+static inline dev_t disk_devt(struct gendisk *disk)
 {
+	return MKDEV(disk->major, disk->first_minor);
 }
-#endif	/* CONFIG_SMP */
 
-/* drivers/block/ll_rw_blk.c */
-extern void disk_round_stats(struct gendisk *disk);
+void disk_uevent(struct gendisk *disk, enum kobject_action action);
 
-/* drivers/block/genhd.c */
-extern int get_blkdev_list(char *);
-extern void add_disk(struct gendisk *disk);
+/* block/genhd.c */
+extern void device_add_disk(struct device *parent, struct gendisk *disk,
+			    const struct attribute_group **groups);
+static inline void add_disk(struct gendisk *disk)
+{
+	device_add_disk(NULL, disk, NULL);
+}
+extern void device_add_disk_no_queue_reg(struct device *parent, struct gendisk *disk);
+static inline void add_disk_no_queue_reg(struct gendisk *disk)
+{
+	device_add_disk_no_queue_reg(NULL, disk);
+}
+
 extern void del_gendisk(struct gendisk *gp);
-extern void unlink_gendisk(struct gendisk *gp);
-extern struct gendisk *get_gendisk(dev_t dev, int *part);
 
-extern void set_device_ro(struct block_device *bdev, int flag);
-extern void set_disk_ro(struct gendisk *disk, int flag);
+void set_disk_ro(struct gendisk *disk, bool read_only);
+
+static inline int get_disk_ro(struct gendisk *disk)
+{
+	return disk->part0->bd_read_only ||
+		test_bit(GD_READ_ONLY, &disk->state);
+}
+
+extern void disk_block_events(struct gendisk *disk);
+extern void disk_unblock_events(struct gendisk *disk);
+extern void disk_flush_events(struct gendisk *disk, unsigned int mask);
+bool set_capacity_and_notify(struct gendisk *disk, sector_t size);
 
 /* drivers/char/random.c */
-extern void add_disk_randomness(struct gendisk *disk);
+extern void add_disk_randomness(struct gendisk *disk) __latent_entropy;
 extern void rand_initialize_disk(struct gendisk *disk);
 
 static inline sector_t get_start_sect(struct block_device *bdev)
 {
-	return bdev->bd_contains == bdev ? 0 : bdev->bd_part->start_sect;
+	return bdev->bd_start_sect;
 }
+
+static inline sector_t bdev_nr_sectors(struct block_device *bdev)
+{
+	return i_size_read(bdev->bd_inode) >> 9;
+}
+
 static inline sector_t get_capacity(struct gendisk *disk)
 {
-	return disk->capacity;
-}
-static inline void set_capacity(struct gendisk *disk, sector_t size)
-{
-	disk->capacity = size;
+	return bdev_nr_sectors(disk->part0);
 }
 
-#endif  /*  __KERNEL__  */
+int bdev_disk_changed(struct gendisk *disk, bool invalidate);
+void blk_drop_partitions(struct gendisk *disk);
 
-#ifdef CONFIG_SOLARIS_X86_PARTITION
-
-#define SOLARIS_X86_NUMSLICE	8
-#define SOLARIS_X86_VTOC_SANE	(0x600DDEEEUL)
-
-struct solaris_x86_slice {
-	__le16 s_tag;		/* ID tag of partition */
-	__le16 s_flag;		/* permission flags */
-	__le32 s_start;		/* start sector no of partition */
-	__le32 s_size;		/* # of blocks in partition */
-};
-
-struct solaris_x86_vtoc {
-	unsigned int v_bootinfo[3];	/* info needed by mboot (unsupported) */
-	__le32 v_sanity;		/* to verify vtoc sanity */
-	__le32 v_version;		/* layout version */
-	char	v_volume[8];		/* volume name */
-	__le16	v_sectorsz;		/* sector size in bytes */
-	__le16	v_nparts;		/* number of partitions */
-	unsigned int v_reserved[10];	/* free space */
-	struct solaris_x86_slice
-		v_slice[SOLARIS_X86_NUMSLICE]; /* slice headers */
-	unsigned int timestamp[SOLARIS_X86_NUMSLICE]; /* timestamp (unsupported) */
-	char	v_asciilabel[128];	/* for compatibility */
-};
-
-#endif /* CONFIG_SOLARIS_X86_PARTITION */
-
-#ifdef CONFIG_BSD_DISKLABEL
-/*
- * BSD disklabel support by Yossi Gottlieb <yogo@math.tau.ac.il>
- * updated by Marc Espie <Marc.Espie@openbsd.org>
- */
-
-/* check against BSD src/sys/sys/disklabel.h for consistency */
-
-#define BSD_DISKMAGIC	(0x82564557UL)	/* The disk magic number */
-#define BSD_MAXPARTITIONS	16
-#define OPENBSD_MAXPARTITIONS	16
-#define BSD_FS_UNUSED		0	/* disklabel unused partition entry ID */
-struct bsd_disklabel {
-	__le32	d_magic;		/* the magic number */
-	__s16	d_type;			/* drive type */
-	__s16	d_subtype;		/* controller/d_type specific */
-	char	d_typename[16];		/* type name, e.g. "eagle" */
-	char	d_packname[16];			/* pack identifier */ 
-	__u32	d_secsize;		/* # of bytes per sector */
-	__u32	d_nsectors;		/* # of data sectors per track */
-	__u32	d_ntracks;		/* # of tracks per cylinder */
-	__u32	d_ncylinders;		/* # of data cylinders per unit */
-	__u32	d_secpercyl;		/* # of data sectors per cylinder */
-	__u32	d_secperunit;		/* # of data sectors per unit */
-	__u16	d_sparespertrack;	/* # of spare sectors per track */
-	__u16	d_sparespercyl;		/* # of spare sectors per cylinder */
-	__u32	d_acylinders;		/* # of alt. cylinders per unit */
-	__u16	d_rpm;			/* rotational speed */
-	__u16	d_interleave;		/* hardware sector interleave */
-	__u16	d_trackskew;		/* sector 0 skew, per track */
-	__u16	d_cylskew;		/* sector 0 skew, per cylinder */
-	__u32	d_headswitch;		/* head switch time, usec */
-	__u32	d_trkseek;		/* track-to-track seek, usec */
-	__u32	d_flags;		/* generic flags */
-#define NDDATA 5
-	__u32	d_drivedata[NDDATA];	/* drive-type specific information */
-#define NSPARE 5
-	__u32	d_spare[NSPARE];	/* reserved for future use */
-	__le32	d_magic2;		/* the magic number (again) */
-	__le16	d_checksum;		/* xor of data incl. partitions */
-
-			/* filesystem and partition information: */
-	__le16	d_npartitions;		/* number of partitions in following */
-	__le32	d_bbsize;		/* size of boot area at sn0, bytes */
-	__le32	d_sbsize;		/* max size of fs superblock, bytes */
-	struct	bsd_partition {		/* the partition table */
-		__le32	p_size;		/* number of sectors in partition */
-		__le32	p_offset;	/* starting sector */
-		__le32	p_fsize;	/* filesystem basic fragment size */
-		__u8	p_fstype;	/* filesystem type, see below */
-		__u8	p_frag;		/* filesystem fragments per block */
-		__le16	p_cpg;		/* filesystem cylinders per group */
-	} d_partitions[BSD_MAXPARTITIONS];	/* actually may be more */
-};
-
-#endif	/* CONFIG_BSD_DISKLABEL */
-
-#ifdef CONFIG_UNIXWARE_DISKLABEL
-/*
- * Unixware slices support by Andrzej Krzysztofowicz <ankry@mif.pg.gda.pl>
- * and Krzysztof G. Baranowski <kgb@knm.org.pl>
- */
-
-#define UNIXWARE_DISKMAGIC     (0xCA5E600DUL)	/* The disk magic number */
-#define UNIXWARE_DISKMAGIC2    (0x600DDEEEUL)	/* The slice table magic nr */
-#define UNIXWARE_NUMSLICE      16
-#define UNIXWARE_FS_UNUSED     0		/* Unused slice entry ID */
-
-struct unixware_slice {
-	__le16   s_label;	/* label */
-	__le16   s_flags;	/* permission flags */
-	__le32   start_sect;	/* starting sector */
-	__le32   nr_sects;	/* number of sectors in slice */
-};
-
-struct unixware_disklabel {
-	__le32   d_type;               	/* drive type */
-	__le32   d_magic;                /* the magic number */
-	__le32   d_version;              /* version number */
-	char    d_serial[12];           /* serial number of the device */
-	__le32   d_ncylinders;           /* # of data cylinders per device */
-	__le32   d_ntracks;              /* # of tracks per cylinder */
-	__le32   d_nsectors;             /* # of data sectors per track */
-	__le32   d_secsize;              /* # of bytes per sector */
-	__le32   d_part_start;           /* # of first sector of this partition */
-	__le32   d_unknown1[12];         /* ? */
- 	__le32	d_alt_tbl;              /* byte offset of alternate table */
- 	__le32	d_alt_len;              /* byte length of alternate table */
- 	__le32	d_phys_cyl;             /* # of physical cylinders per device */
- 	__le32	d_phys_trk;             /* # of physical tracks per cylinder */
- 	__le32	d_phys_sec;             /* # of physical sectors per track */
- 	__le32	d_phys_bytes;           /* # of physical bytes per sector */
- 	__le32	d_unknown2;             /* ? */
-	__le32   d_unknown3;             /* ? */
-	__le32	d_pad[8];               /* pad */
-
-	struct unixware_vtoc {
-		__le32	v_magic;		/* the magic number */
-		__le32	v_version;		/* version number */
-		char	v_name[8];		/* volume name */
-		__le16	v_nslices;		/* # of slices */
-		__le16	v_unknown1;		/* ? */
-		__le32	v_reserved[10];		/* reserved */
-		struct unixware_slice
-			v_slice[UNIXWARE_NUMSLICE];	/* slice headers */
-	} vtoc;
-
-};  /* 408 */
-
-#endif /* CONFIG_UNIXWARE_DISKLABEL */
-
-#ifdef CONFIG_MINIX_SUBPARTITION
-#   define MINIX_NR_SUBPARTITIONS  4
-#endif /* CONFIG_MINIX_SUBPARTITION */
-
-#ifdef __KERNEL__
-
-char *disk_name (struct gendisk *hd, int part, char *buf);
-
-extern int rescan_partitions(struct gendisk *disk, struct block_device *bdev);
-extern void add_partition(struct gendisk *, int, sector_t, sector_t);
-extern void delete_partition(struct gendisk *, int);
-
-extern struct gendisk *alloc_disk(int minors);
-extern struct kobject *get_disk(struct gendisk *disk);
+extern struct gendisk *__alloc_disk_node(int minors, int node_id);
 extern void put_disk(struct gendisk *disk);
 
-extern void blk_register_region(dev_t dev, unsigned long range,
-			struct module *module,
-			struct kobject *(*probe)(dev_t, int *, void *),
-			int (*lock)(dev_t, void *),
-			void *data);
-extern void blk_unregister_region(dev_t dev, unsigned long range);
+#define alloc_disk_node(minors, node_id)				\
+({									\
+	static struct lock_class_key __key;				\
+	const char *__name;						\
+	struct gendisk *__disk;						\
+									\
+	__name = "(gendisk_completion)"#minors"("#node_id")";		\
+									\
+	__disk = __alloc_disk_node(minors, node_id);			\
+									\
+	if (__disk)							\
+		lockdep_init_map(&__disk->lockdep_map, __name, &__key, 0); \
+									\
+	__disk;								\
+})
 
-static inline struct block_device *bdget_disk(struct gendisk *disk, int index)
+#define alloc_disk(minors) alloc_disk_node(minors, NUMA_NO_NODE)
+
+/**
+ * blk_alloc_disk - allocate a gendisk structure
+ * @node_id: numa node to allocate on
+ *
+ * Allocate and pre-initialize a gendisk structure for use with BIO based
+ * drivers.
+ *
+ * Context: can sleep
+ */
+#define blk_alloc_disk(node_id)						\
+({									\
+	struct gendisk *__disk = __blk_alloc_disk(node_id);		\
+	static struct lock_class_key __key;				\
+									\
+	if (__disk)							\
+		lockdep_init_map(&__disk->lockdep_map,			\
+			"(bio completion)", &__key, 0);			\
+	__disk;								\
+})
+struct gendisk *__blk_alloc_disk(int node);
+void blk_cleanup_disk(struct gendisk *disk);
+
+int __register_blkdev(unsigned int major, const char *name,
+		void (*probe)(dev_t devt));
+#define register_blkdev(major, name) \
+	__register_blkdev(major, name, NULL)
+void unregister_blkdev(unsigned int major, const char *name);
+
+bool bdev_check_media_change(struct block_device *bdev);
+int __invalidate_device(struct block_device *bdev, bool kill_dirty);
+void set_capacity(struct gendisk *disk, sector_t size);
+
+/* for drivers/char/raw.c: */
+int blkdev_ioctl(struct block_device *, fmode_t, unsigned, unsigned long);
+long compat_blkdev_ioctl(struct file *, unsigned, unsigned long);
+
+#ifdef CONFIG_SYSFS
+int bd_link_disk_holder(struct block_device *bdev, struct gendisk *disk);
+void bd_unlink_disk_holder(struct block_device *bdev, struct gendisk *disk);
+#else
+static inline int bd_link_disk_holder(struct block_device *bdev,
+				      struct gendisk *disk)
 {
-	return bdget(MKDEV(disk->major, disk->first_minor) + index);
+	return 0;
 }
+static inline void bd_unlink_disk_holder(struct block_device *bdev,
+					 struct gendisk *disk)
+{
+}
+#endif /* CONFIG_SYSFS */
 
-#endif
+dev_t part_devt(struct gendisk *disk, u8 partno);
+dev_t blk_lookup_devt(const char *name, int partno);
+void blk_request_module(dev_t devt);
+#ifdef CONFIG_BLOCK
+void printk_all_partitions(void);
+#else /* CONFIG_BLOCK */
+static inline void printk_all_partitions(void)
+{
+}
+#endif /* CONFIG_BLOCK */
 
-#endif
+#endif /* _LINUX_GENHD_H */
